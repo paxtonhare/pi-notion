@@ -398,7 +398,53 @@ describe("pi-notion mcp client runtime helpers", () => {
 
     expect(await connectWithSavedConfig(client, notify)).toBe(false);
     expect(notify).toHaveBeenCalledWith("Connection failed: bad auth", "error");
-    expect(clearSpy).toHaveBeenCalled();
+    expect(clearSpy).not.toHaveBeenCalled();
+  });
+
+  it("refreshes and retries registered tools after authentication errors without clearing saved auth", async () => {
+    global.fetch = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/token")) {
+        return {
+          ok: true,
+          json: async () => ({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600 }),
+        } as Response;
+      }
+      return { ok: true, headers: new Headers(), json: async () => ({ result: { tools: [] } }) } as Response;
+    }) as typeof fetch;
+
+    const client = new NotionMCPClient();
+    client.state.connected = true;
+    const saved = {
+      mcpUrl: "https://mcp.notion.com/mcp",
+      accessToken: "old-access",
+      refreshToken: "refresh-token",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      clientId: "client-id",
+      clientSecret: "client-secret",
+    };
+    vi.spyOn(storage, "load").mockResolvedValueOnce(saved);
+    const saveSpy = vi.spyOn(storage, "save").mockResolvedValue();
+    const clearSpy = vi.spyOn(storage, "clear").mockResolvedValue();
+    const connectSpy = vi.spyOn(client, "connect").mockResolvedValue();
+    vi.spyOn(client, "callTool")
+      .mockRejectedValueOnce(new Error("HTTP 401: invalid_token"))
+      .mockResolvedValueOnce("retried ok");
+
+    const execute = createRegisteredToolExecutor(client, saved.mcpUrl, {
+      name: "notion-search",
+      description: "search",
+      inputSchema: {},
+    });
+
+    const result = await execute("call-1", { query: "x" }, new AbortController().signal, undefined, undefined);
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toBe("retried ok");
+    expect(connectSpy).toHaveBeenCalledWith(saved.mcpUrl, "new-access");
+    expect(saveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ accessToken: "new-access", refreshToken: "new-refresh" }),
+    );
+    expect(clearSpy).not.toHaveBeenCalled();
   });
 
   it("finalizes and ensures connections", async () => {

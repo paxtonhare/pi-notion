@@ -796,7 +796,24 @@ function createRegisteredToolExecutor(
       if (isAuthenticationError(error)) {
         client.state.connected = false;
         client.state.authenticated = false;
-        await storage.clear();
+
+        const savedConfig = await storage.load();
+        if (savedConfig?.refreshToken) {
+          try {
+            const refreshedConfig = await refreshSavedConfigIfNeeded(savedConfig, () => {}, true);
+            await client.connect(refreshedConfig.mcpUrl, refreshedConfig.accessToken);
+            const retried = await client.callTool(refreshedConfig.mcpUrl, tool.name, params as Record<string, unknown>);
+            return toolResult(tool.name, retried || "", { tool: tool.name, retriedAfterRefresh: true });
+          } catch (refreshError) {
+            const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+            return toolError(
+              tool.name,
+              `Notion authentication failed and token refresh did not recover it. Run /notion or notion_mcp_connect to reconnect. Original error: ${message}. Refresh error: ${refreshMessage}`,
+              { tool: tool.name, error: message, refreshError: refreshMessage, authExpired: true },
+            );
+          }
+        }
+
         return toolError(
           tool.name,
           `Notion authentication expired or was rejected. Run /notion or notion_mcp_connect to reconnect. Original error: ${message}`,
@@ -815,14 +832,19 @@ interface OAuthConnectionData {
 
 const TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
-async function refreshSavedConfigIfNeeded(savedConfig: StoredConfig, notify: NotifyFn): Promise<StoredConfig> {
+async function refreshSavedConfigIfNeeded(
+  savedConfig: StoredConfig,
+  notify: NotifyFn,
+  forceRefresh = false,
+): Promise<StoredConfig> {
   if (
-    !savedConfig.refreshToken ||
-    !savedConfig.expiresAt ||
-    savedConfig.expiresAt - TOKEN_REFRESH_SKEW_MS > Date.now()
+    !forceRefresh &&
+    (!savedConfig.refreshToken || !savedConfig.expiresAt || savedConfig.expiresAt - TOKEN_REFRESH_SKEW_MS > Date.now())
   ) {
     return savedConfig;
   }
+
+  if (!savedConfig.refreshToken) return savedConfig;
 
   notify("Refreshing saved Notion MCP token...");
   const refreshed = await refreshAccessToken(savedConfig.refreshToken, savedConfig.clientId, savedConfig.clientSecret);
@@ -848,7 +870,6 @@ async function connectWithSavedConfig(client: NotionMCPClient, notify: NotifyFn)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     notify(`Connection failed: ${message}`, "error");
-    await storage.clear();
     return false;
   }
 }
@@ -1037,7 +1058,6 @@ export default function notionMCPClientExtension(pi: ExtensionAPI) {
             `Already connected to Notion MCP!\n\n${tools.length} tools available: ${tools.map((t) => t.name).join(", ")}`,
           );
         }
-        await storage.clear();
       }
 
       try {
@@ -1082,8 +1102,7 @@ export default function notionMCPClientExtension(pi: ExtensionAPI) {
       }
 
       if (mcpClient.state.connected && mcpClient.state.mcpUrl) {
-        const live = await mcpClient.checkConnection(mcpClient.state.mcpUrl);
-        if (!live) await storage.clear();
+        await mcpClient.checkConnection(mcpClient.state.mcpUrl);
       }
 
       const { connected, sessionId, mcpUrl } = mcpClient.state;
