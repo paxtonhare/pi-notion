@@ -14,10 +14,20 @@ describe("pi-notion", () => {
       expect(pkg.version).toBeTruthy();
     });
 
-    it("should have pi extension entry point", () => {
+    it("should have pi extension entry points", () => {
       const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
       expect(pkg.pi).toBeDefined();
-      expect(pkg.pi.extensions).toContain("./extensions/index.ts");
+      expect(pkg.pi.extensions).toEqual(["./extensions/index.ts", "./extensions/mcp-client.ts"]);
+    });
+
+    it("should expose Notion extensions when installed from the repository root", () => {
+      const pkg = JSON.parse(readFileSync(join(__dirname, "../../../package.json"), "utf-8"));
+      expect(pkg.pi).toBeDefined();
+      expect(pkg.pi.extensions).toEqual([
+        "./packages/pi-notion/extensions/index.ts",
+        "./packages/pi-notion/extensions/mcp-client.ts",
+      ]);
+      expect(pkg.pi.skills).toEqual(["./packages/pi-notion/skills"]);
     });
 
     it("should have axios dependency", () => {
