@@ -208,7 +208,7 @@ describe("pi-notion mcp client runtime helpers", () => {
         { client_id: "client" },
         notify,
       ),
-    ).toBe("direct-token");
+    ).toMatchObject({ accessToken: "direct-token" });
 
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -225,7 +225,7 @@ describe("pi-notion mcp client runtime helpers", () => {
         { client_id: "client" },
         notify,
       ),
-    ).toBe("exchanged-token");
+    ).toMatchObject({ accessToken: "exchanged-token" });
     expect(notify).toHaveBeenCalledWith("Exchanging authorization code for token...");
 
     await expect(
@@ -409,7 +409,7 @@ describe("pi-notion mcp client runtime helpers", () => {
     await finalizeConnection(
       client,
       { client_id: "client-1", client_secret: "secret-1" },
-      "token-123",
+      { accessToken: "token-123", refreshToken: "refresh-123", expiresAt: Date.now() + 3600 * 1000 },
       registerTools,
       vi.fn(),
     );
