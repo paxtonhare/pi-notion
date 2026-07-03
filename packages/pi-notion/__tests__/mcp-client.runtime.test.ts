@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import notionMCPClientExtension, {
+  announceAuthorizationUrl,
   buildAuthorizationUrl,
   buildHtmlResponse,
   coerceNumericProperties,
@@ -383,6 +384,18 @@ describe("pi-notion mcp client runtime helpers", () => {
 
     notify("fallback message", "error");
     expect(logSpy).toHaveBeenCalledWith("[pi-notion] fallback message");
+    logSpy.mockRestore();
+  });
+
+  it("prints the Notion authorization URL for headless setup", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const notify = vi.fn();
+    const url = "https://mcp.notion.com/authorize?client_id=test";
+
+    announceAuthorizationUrl(url, notify);
+
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining(url));
+    expect(logSpy).toHaveBeenCalledWith(`[pi-notion] Authorization URL: ${url}`);
     logSpy.mockRestore();
   });
 

@@ -725,6 +725,12 @@ async function openBrowser(url: string): Promise<void> {
   exec(`${cmd} "${url}"`);
 }
 
+function announceAuthorizationUrl(authUrl: string, notify: NotifyFn): void {
+  const message = `Open this Notion authorization URL if your browser did not open automatically:\n${authUrl}`;
+  notify(message);
+  console.log(`[pi-notion] Authorization URL: ${authUrl}`);
+}
+
 function createUiNotifier(pi: ExtensionAPI): NotifyFn {
   return (message, type = "info") => {
     try {
@@ -884,6 +890,7 @@ async function performOAuthConnection(notify: NotifyFn): Promise<OAuthConnection
   const { codeVerifier, codeChallenge } = createPkceChallenge();
   const authUrl = buildAuthorizationUrl(registration, callbackUrl, codeChallenge, state);
 
+  announceAuthorizationUrl(authUrl, notify);
   notify("Opening Notion authorization page...");
   await openBrowser(authUrl);
   notify("Waiting for authorization callback...");
@@ -935,6 +942,7 @@ async function disconnectClient(client: NotionMCPClient): Promise<void> {
 }
 
 export {
+  announceAuthorizationUrl,
   buildAuthorizationUrl,
   buildHtmlResponse,
   coerceNumericProperties,
