@@ -34,6 +34,7 @@ function getHomeDir(): string {
 
 type NotifyLevel = "info" | "error";
 type NotifyFn = (message: string, type?: NotifyLevel) => void;
+type OAuthInputFn = (prompt: string, placeholder?: string) => Promise<string | undefined>;
 
 type ToolExecutionResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -153,6 +154,21 @@ function resolveCallbackResult(
     },
     result: { error: "No code or token in callback" },
   };
+}
+
+function parseManualOAuthCallbackInput(input: string, expectedState: string): OAuthCallbackResult {
+  const trimmed = input.trim();
+  if (!trimmed) return { error: "No authorization code provided" };
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return resolveCallbackResult(new URL(trimmed).searchParams, expectedState).result;
+  }
+
+  if (trimmed.includes("=")) {
+    return resolveCallbackResult(new URLSearchParams(trimmed.replace(/^\?/, "")), expectedState).result;
+  }
+
+  return { code: trimmed };
 }
 
 async function startOAuthCallbackServer(
@@ -914,6 +930,25 @@ async function performOAuthConnection(notify: NotifyFn): Promise<OAuthConnection
   return { tokens, registration };
 }
 
+async function performManualOAuthConnection(notify: NotifyFn, input: OAuthInputFn): Promise<OAuthConnectionData> {
+  const state = randomBytes(16).toString("hex");
+  const callbackUrl = "http://localhost:3000/callback";
+
+  notify("Registering OAuth client...");
+  const registration = await registerClient(callbackUrl);
+  const { codeVerifier, codeChallenge } = createPkceChallenge();
+  const authUrl = buildAuthorizationUrl(registration, callbackUrl, codeChallenge, state);
+
+  announceAuthorizationUrl(authUrl, notify);
+  notify(
+    "Open the saved Notion URL on any machine. After approving, paste the failed localhost redirect URL here. Raw code also works.",
+  );
+  const pasted = await input("Paste Notion redirect URL or code", `${callbackUrl}?code=...&state=${state}`);
+  const callbackResult = parseManualOAuthCallbackInput(pasted ?? "", state);
+  const tokens = await resolveAccessToken(callbackResult, callbackUrl, codeVerifier, registration, notify);
+  return { tokens, registration };
+}
+
 async function finalizeConnection(
   client: NotionMCPClient,
   registration: ClientRegistration | null,
@@ -950,6 +985,23 @@ async function ensureConnected(
   return { reusedSavedConfig: false };
 }
 
+async function ensureConnectedManually(
+  client: NotionMCPClient,
+  registerMCPTools: () => void,
+  notify: NotifyFn,
+  input: OAuthInputFn,
+): Promise<{ reusedSavedConfig: boolean }> {
+  const connectedFromSavedConfig = await connectWithSavedConfig(client, notify);
+  if (connectedFromSavedConfig) {
+    registerMCPTools();
+    return { reusedSavedConfig: true };
+  }
+
+  const { tokens, registration } = await performManualOAuthConnection(notify, input);
+  await finalizeConnection(client, registration, tokens, registerMCPTools, notify);
+  return { reusedSavedConfig: false };
+}
+
 async function disconnectClient(client: NotionMCPClient): Promise<void> {
   await client.disconnect();
   await storage.clear();
@@ -967,6 +1019,7 @@ export {
   createUiNotifier,
   disconnectClient,
   ensureConnected,
+  ensureConnectedManually,
   FileTokenStorage,
   finalizeConnection,
   getConnectedStatusMessage,
@@ -975,6 +1028,7 @@ export {
   isNumericString,
   isRecord,
   NotionMCPClient,
+  parseManualOAuthCallbackInput,
   resolveAccessToken,
   resolveCallbackResult,
   startOAuthCallbackServer,
@@ -1031,8 +1085,8 @@ export default function notionMCPClientExtension(pi: ExtensionAPI) {
 
   // /notion command
   pi.registerCommand("notion", {
-    description: "Connect to Notion MCP, show status, or disconnect",
-    async handler(_args, ctx) {
+    description: "Connect to Notion MCP, show status, or disconnect. Use /notion headless over SSH.",
+    async handler(args, ctx) {
       if (!mcpClient) {
         ctx.ui.notify("Notion MCP not initialized", "error");
         return;
@@ -1040,8 +1094,16 @@ export default function notionMCPClientExtension(pi: ExtensionAPI) {
 
       if (!mcpClient.state.connected) {
         const uiNotify: NotifyFn = (message, type = "info") => ctx.ui.notify(message, type);
+        const manual =
+          /\b(headless|manual|code)\b/i.test(args ?? "") || Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY);
         try {
-          await ensureConnected(mcpClient, registerMCPTools, uiNotify);
+          if (manual) {
+            await ensureConnectedManually(mcpClient, registerMCPTools, uiNotify, (prompt, placeholder) =>
+              ctx.ui.input(prompt, placeholder),
+            );
+          } else {
+            await ensureConnected(mcpClient, registerMCPTools, uiNotify);
+          }
           ctx.ui.notify(`Connected! Session: ${mcpClient.state.sessionId?.slice(0, 8)}...`, "info");
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

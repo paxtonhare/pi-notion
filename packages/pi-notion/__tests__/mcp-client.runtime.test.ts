@@ -19,6 +19,7 @@ import notionMCPClientExtension, {
   getConnectionStatusText,
   getDefaultAuthFilePath,
   NotionMCPClient,
+  parseManualOAuthCallbackInput,
   resolveAccessToken,
   resolveCallbackResult,
   startOAuthCallbackServer,
@@ -65,6 +66,19 @@ describe("pi-notion mcp client runtime helpers", () => {
 
     const missing = resolveCallbackResult(new URLSearchParams("state=expected"), "expected");
     expect(missing.result.error).toBe("No code or token in callback");
+  });
+
+  it("parses manual OAuth redirect input for SSH/headless auth", () => {
+    expect(
+      parseManualOAuthCallbackInput("http://localhost:3000/callback?code=code-123&state=expected", "expected"),
+    ).toEqual({
+      code: "code-123",
+    });
+    expect(parseManualOAuthCallbackInput("?code=code-456&state=expected", "expected")).toEqual({ code: "code-456" });
+    expect(parseManualOAuthCallbackInput("raw-code-789", "expected")).toEqual({ code: "raw-code-789" });
+    expect(parseManualOAuthCallbackInput("http://localhost:3000/callback?code=bad&state=wrong", "expected")).toEqual({
+      error: "State mismatch",
+    });
   });
 
   it("creates a PKCE challenge pair and authorization URL", () => {
