@@ -725,10 +725,24 @@ async function openBrowser(url: string): Promise<void> {
   exec(`${cmd} "${url}"`);
 }
 
-function announceAuthorizationUrl(authUrl: string, notify: NotifyFn): void {
-  const message = `Open this Notion authorization URL if your browser did not open automatically:\n${authUrl}`;
-  notify(message);
-  console.log(`[pi-notion] Authorization URL: ${authUrl}`);
+function getAuthorizationUrlFilePath(): string {
+  return join(getHomeDir(), ".pi", "agent", "notion-oauth-url.txt");
+}
+
+function announceAuthorizationUrl(authUrl: string, notify: NotifyFn): string | null {
+  try {
+    const path = getAuthorizationUrlFilePath();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${authUrl}\n`, "utf-8");
+    notify(`Notion OAuth URL saved to ${path}\nCopy it with: cat "${path}"`);
+    console.log(`[pi-notion] Authorization URL saved to: ${path}`);
+    console.log(`[pi-notion] Copy with: cat "${path}"`);
+    return path;
+  } catch {
+    notify(`Open this Notion authorization URL if your browser did not open automatically:\n${authUrl}`);
+    console.log(`[pi-notion] Authorization URL: ${authUrl}`);
+    return null;
+  }
 }
 
 function createUiNotifier(pi: ExtensionAPI): NotifyFn {

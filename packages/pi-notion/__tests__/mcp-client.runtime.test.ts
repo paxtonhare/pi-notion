@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -387,16 +387,29 @@ describe("pi-notion mcp client runtime helpers", () => {
     logSpy.mockRestore();
   });
 
-  it("prints the Notion authorization URL for headless setup", () => {
+  it("saves the Notion authorization URL for headless setup", () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "pi-notion-oauth-url-"));
+    const originalHome = process.env.HOME;
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const notify = vi.fn();
-    const url = "https://mcp.notion.com/authorize?client_id=test";
+    const url = "https://mcp.notion.com/authorize?client_id=test&long=value";
 
-    announceAuthorizationUrl(url, notify);
+    try {
+      process.env.HOME = tempHome;
+      const savedPath = announceAuthorizationUrl(url, notify);
 
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining(url));
-    expect(logSpy).toHaveBeenCalledWith(`[pi-notion] Authorization URL: ${url}`);
-    logSpy.mockRestore();
+      expect(savedPath).toBe(join(tempHome, ".pi", "agent", "notion-oauth-url.txt"));
+      expect(savedPath).not.toBeNull();
+      if (!savedPath) throw new Error("expected saved path");
+      expect(readFileSync(savedPath, "utf-8")).toBe(`${url}\n`);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining(`cat "${savedPath}"`));
+      expect(logSpy).toHaveBeenCalledWith(`[pi-notion] Authorization URL saved to: ${savedPath}`);
+    } finally {
+      logSpy.mockRestore();
+      if (originalHome) process.env.HOME = originalHome;
+      else delete process.env.HOME;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
   });
 
   it("returns false when saved config is missing or invalid", async () => {
