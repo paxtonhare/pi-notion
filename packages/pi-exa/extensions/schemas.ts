@@ -3,6 +3,7 @@
  */
 
 import { Type } from "typebox";
+import { ADVANCED_SEARCH_TYPES } from "./constants.js";
 import {
   CRITERION_CATEGORIES,
   CRITERION_STATUSES,
@@ -16,7 +17,11 @@ import {
   SUMMARY_MODES,
 } from "./research-planner-types.js";
 
-const outputSchemaType = Type.Union([Type.Literal("object"), Type.Literal("text")]);
+const outputSchemaType = Type.Union([Type.Literal("object"), Type.Literal("text")], {
+  description:
+    'Output mode. "text" returns prose; "object" returns a JSON object matching `properties` (max 10 properties, max depth 2). ' +
+    "Tool-specific default behavior is documented in each tool's description.",
+});
 
 const outputSchema = Type.Object(
   {
@@ -26,12 +31,12 @@ const outputSchema = Type.Object(
 );
 
 const advancedSearchType = Type.Union([
-  Type.Literal("auto"),
-  Type.Literal("fast"),
-  Type.Literal("neural"),
-  Type.Literal("keyword"),
-  Type.Literal("hybrid"),
-  Type.Literal("instant"),
+  Type.Literal(ADVANCED_SEARCH_TYPES[0]),
+  Type.Literal(ADVANCED_SEARCH_TYPES[1]),
+  Type.Literal(ADVANCED_SEARCH_TYPES[2]),
+  Type.Literal(ADVANCED_SEARCH_TYPES[3]),
+  Type.Literal(ADVANCED_SEARCH_TYPES[4]),
+  Type.Literal(ADVANCED_SEARCH_TYPES[5]),
 ]);
 
 const researchStage = Type.Union([
@@ -164,8 +169,11 @@ export const webSearchParams = Type.Object(
 
 export const webFetchParams = Type.Object(
   {
+    // Cap matches webSearchParams.numResults discipline so callers cannot
+    // submit unbounded batches that would inflate cost or latency.
     urls: Type.Array(Type.String({ description: "URLs to read. Batch multiple URLs in one call." }), {
-      description: "URLs to read",
+      description: "URLs to read (max 50 per call).",
+      maxItems: 50,
     }),
     maxCharacters: Type.Optional(
       Type.Integer({ description: "Maximum characters to extract per page (default: 3000)", minimum: 1 }),
@@ -197,9 +205,82 @@ export const webSearchAdvancedParams = Type.Object(
     endPublishedDate: Type.Optional(Type.String({ description: "ISO date filter (e.g., 2024-12-31)" })),
     includeDomains: Type.Optional(Type.Array(Type.String())),
     excludeDomains: Type.Optional(Type.Array(Type.String())),
-    textMaxCharacters: Type.Optional(Type.Integer()),
+    includeText: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Only return results whose text contains this string. 1 string of up to 5 words (Exa API limit).",
+        maxItems: 1,
+      }),
+    ),
+    excludeText: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Exclude results whose text contains this string. 1 string of up to 5 words (Exa API limit).",
+        maxItems: 1,
+      }),
+    ),
+    userLocation: Type.Optional(
+      Type.String({ description: "Two-letter ISO country code for the user (e.g., 'US', 'GB', 'DE')." }),
+    ),
+    moderation: Type.Optional(Type.Boolean({ description: "Filter unsafe content when true." })),
+    additionalQueries: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Alternative query formulations to broaden coverage.",
+      }),
+    ),
+    textMaxCharacters: Type.Optional(Type.Integer({ minimum: 1 })),
+    contextMaxCharacters: Type.Optional(
+      Type.Integer({
+        description:
+          "Maximum characters for the aggregated context string. (Note: maps to Exa's deprecated context option; may be removed in a future Exa API release.)",
+        minimum: 1,
+      }),
+    ),
     enableHighlights: Type.Optional(Type.Boolean()),
-    highlightsNumSentences: Type.Optional(Type.Integer()),
+    highlightsNumSentences: Type.Optional(
+      Type.Integer({ description: "Legacy; prefer highlightsMaxCharacters.", minimum: 1 }),
+    ),
+    highlightsMaxCharacters: Type.Optional(
+      Type.Integer({
+        description: "Total highlight characters per URL. Preferred over highlightsNumSentences.",
+        minimum: 1,
+      }),
+    ),
+    highlightsQuery: Type.Optional(
+      Type.String({ description: "Query used to rank highlights; defaults to the main query." }),
+    ),
+    enableSummary: Type.Optional(Type.Boolean({ description: "Generate an LLM summary per result." })),
+    summaryQuery: Type.Optional(
+      Type.String({ description: "Focus query for summary generation. Implies enableSummary." }),
+    ),
+    maxAgeHours: Type.Optional(
+      Type.Integer({
+        description: "Cache max age in hours. 0 = always fetch fresh, -1 = cache-only.",
+        minimum: -1,
+      }),
+    ),
+    livecrawlTimeout: Type.Optional(
+      Type.Integer({
+        description: "Milliseconds to wait when livecrawling freshening fetches (max 60000).",
+        minimum: 1,
+        maximum: 60_000,
+      }),
+    ),
+    subpages: Type.Optional(
+      Type.Integer({ description: "Number of subpages to crawl per result (1-10).", minimum: 1, maximum: 10 }),
+    ),
+    subpageTarget: Type.Optional(
+      Type.Union(
+        [
+          Type.String(),
+          Type.Array(Type.String(), {
+            description: "Keywords used to select which subpages to crawl (e.g., 'about', 'pricing').",
+          }),
+        ],
+        {
+          description:
+            "Single keyword or list of keywords used to select which subpages to crawl (e.g., 'about' or ['about', 'pricing']).",
+        },
+      ),
+    ),
   },
   { additionalProperties: true },
 );

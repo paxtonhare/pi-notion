@@ -7,6 +7,8 @@
   - `__tests__/` for Vitest tests (e.g., `index.test.ts`, `helpers.test.ts`).
   - `README.md`, `package.json`, and `LICENSE` per package.
 - Root-level configs live in `biome.json`, `tsconfig.json`, and `vitest.config.ts`.
+- `docs/solutions/` contains documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter fields such as `module`, `tags`, and `problem_type`; relevant when implementing or debugging in documented areas.
+- `CONCEPTS.md` defines shared domain vocabulary (entities, named processes, status concepts) with project-specific meaning; relevant when orienting to the codebase or discussing domain concepts.
 
 ## Build, Test, and Development Commands
 Run these from the repo root unless noted:
