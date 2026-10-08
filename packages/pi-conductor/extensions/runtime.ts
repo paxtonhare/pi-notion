@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
 import {
-  AuthStorage,
   createAgentSession,
   createExtensionRuntime,
   defineTool,
-  ModelRegistry,
+  ModelRuntime,
+  type ResourceLoader,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -77,7 +77,7 @@ function buildRuntimeHandle(sessionManager: SessionManager, lastResumedAt: strin
   };
 }
 
-function createMinimalRunResourceLoader() {
+function createMinimalRunResourceLoader(): ResourceLoader {
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
@@ -92,15 +92,12 @@ function createMinimalRunResourceLoader() {
         "Do not rely on slash commands, interactive UI affordances, or conductor management tools.",
         "Be concise and finish with a short outcome summary.",
       ].join(" "),
+    getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
+    getAppendSystemPromptSources: () => [],
     extendResources: () => {},
     reload: async () => {},
   };
-}
-
-function getModelRegistryForRun(): ModelRegistry {
-  const authStorage = AuthStorage.create();
-  return ModelRegistry.create(authStorage);
 }
 
 export function mapStopReasonToRunOutcome(stopReason: StopReason): {
@@ -119,6 +116,12 @@ export function mapStopReasonToRunOutcome(stopReason: StopReason): {
         status: "error",
         errorMessage:
           "Run stopped because the model hit its output or context length limit; shorten or split the task and retry",
+      };
+    case "pending":
+    case "deferred":
+      return {
+        status: "error",
+        errorMessage: "Run ended before the model produced a terminal response",
       };
     case "toolUse":
       return {
@@ -344,18 +347,13 @@ export async function preflightWorkerRunRuntime(input: RuntimeRunPreflightContex
     throw new Error("Worker session file is not available for a foreground run");
   }
 
-  const modelRegistry = getModelRegistryForRun();
-  if (modelRegistry.getAvailable().length === 0) {
+  const modelRuntime = await ModelRuntime.create();
+  if ((await modelRuntime.getAvailable()).length === 0) {
     throw new Error("No usable model or provider configuration is available for pi-conductor worker runs");
   }
 }
 
 export async function runWorkerPromptRuntime(input: RuntimeRunContext): Promise<RuntimeRunResult> {
-  const sessionManager = SessionManager.open(input.sessionFile);
-  const modelRegistry = getModelRegistryForRun();
-  const authStorage = modelRegistry.authStorage;
-  const resourceLoader = createMinimalRunResourceLoader();
-
   if (input.signal?.aborted) {
     return {
       status: "aborted",
@@ -365,14 +363,25 @@ export async function runWorkerPromptRuntime(input: RuntimeRunContext): Promise<
     };
   }
 
+  const sessionManager = SessionManager.open(input.sessionFile);
+  let modelRuntime: ModelRuntime;
+  try {
+    modelRuntime = await ModelRuntime.create({ signal: input.signal });
+  } catch (error) {
+    if (input.signal?.aborted) {
+      return { status: "aborted", finalText: null, errorMessage: null, sessionId: null };
+    }
+    throw error;
+  }
+  const resourceLoader = createMinimalRunResourceLoader();
+
   const customTools = input.taskContract ? buildRunScopedConductorTools(input) : [];
   const enabledTools = ["read", "bash", "edit", "write", "grep", "find", "ls", ...customTools.map((tool) => tool.name)];
 
   const { session } = await createAgentSession({
     cwd: input.worktreePath,
     sessionManager,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader,
     tools: enabledTools,
     customTools,
@@ -396,6 +405,10 @@ export async function runWorkerPromptRuntime(input: RuntimeRunContext): Promise<
   try {
     await session.bindExtensions({});
     await input.onSessionReady?.(session.sessionId);
+
+    if (input.signal?.aborted) {
+      return { status: "aborted", finalText: null, errorMessage: null, sessionId: session.sessionId };
+    }
 
     initialMessageCount = session.messages.length;
 
