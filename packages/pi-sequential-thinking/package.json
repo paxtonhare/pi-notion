@@ -62,9 +62,6 @@
     },
     "@earendil-works/pi-coding-agent": {
       "optional": true
-    },
-    "typebox": {
-      "optional": true
     }
   },
   "dependencies": {

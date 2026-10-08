@@ -4,6 +4,12 @@ All notable changes to `@feniix/pi-exa` are recorded in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Declare TypeBox as a required wildcard peer for Pi 1.1 host provisioning instead of bundling a runtime copy. Standalone npm consumers still install the peer automatically; Pi supplies its own copy.
+
 ## [5.0.1] - 2026-06-15
 
 ### Fixed
