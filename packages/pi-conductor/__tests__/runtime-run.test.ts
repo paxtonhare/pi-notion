@@ -1,16 +1,16 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelRegistry } from "@mariozechner/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const codingAgentMocks = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   openSession: vi.fn(),
 }));
 
-vi.mock("@mariozechner/pi-coding-agent", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mariozechner/pi-coding-agent")>();
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
   return {
     ...actual,
     SessionManager: {
@@ -32,7 +32,12 @@ import {
 } from "../extensions/runtime.js";
 import { mapRunStatusToRuntimeStatus } from "../extensions/runtime-metadata.js";
 
+const createModelRuntime = ModelRuntime.create.bind(ModelRuntime);
+
 describe("worker run runtime helpers", () => {
+  beforeEach(() => {
+    vi.spyOn(ModelRuntime, "create").mockResolvedValue({ getAvailable: async () => [] } as unknown as ModelRuntime);
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     codingAgentMocks.openSession.mockReset();
@@ -211,6 +216,9 @@ describe("worker run runtime helpers", () => {
   });
 
   it("maps Pi stop reasons to conductor run outcomes", () => {
+    for (const reason of ["pending", "deferred"] as const) {
+      expect(mapStopReasonToRunOutcome(reason)).toMatchObject({ status: "error" });
+    }
     expect(mapStopReasonToRunOutcome("stop")).toEqual({ status: "success", errorMessage: null });
     expect(mapStopReasonToRunOutcome("aborted")).toEqual({ status: "aborted", errorMessage: null });
     expect(mapStopReasonToRunOutcome("error")).toEqual({ status: "error", errorMessage: null });
@@ -226,9 +234,9 @@ describe("worker run runtime helpers", () => {
   });
 
   it("validates worker context before declaring preflight success", async () => {
-    vi.spyOn(ModelRegistry, "create").mockReturnValue({
+    vi.spyOn(ModelRuntime, "create").mockResolvedValue({
       getAvailable: () => [{ id: "fake-model" }],
-    } as unknown as ModelRegistry);
+    } as unknown as ModelRuntime);
 
     const worktreePath = mkdtempSync(join(tmpdir(), "pi-conductor-runtime-"));
     const sessionFile = join(worktreePath, "session.jsonl");
@@ -335,7 +343,7 @@ describe("worker run runtime helpers", () => {
   });
 
   it("fails preflight when no model provider is configured", async () => {
-    vi.spyOn(ModelRegistry, "create").mockReturnValue({ getAvailable: () => [] } as unknown as ModelRegistry);
+    vi.spyOn(ModelRuntime, "create").mockResolvedValue({ getAvailable: () => [] } as unknown as ModelRuntime);
 
     const worktreePath = mkdtempSync(join(tmpdir(), "pi-conductor-runtime-"));
     const sessionFile = join(worktreePath, "session.jsonl");
@@ -369,6 +377,138 @@ describe("worker run runtime helpers", () => {
     const result = await backend.run({ worktreePath, sessionFile, task: "do work" });
 
     expect(result).toMatchObject({ status: "success", finalText: "done", sessionId: "run-session-backend" });
+  });
+
+  it("uses the real Pi SDK loader, exact tools, and persisted session without provider calls", async () => {
+    const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
+      "@earendil-works/pi-coding-agent",
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-conductor-sdk-"));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
+    try {
+      const runtime = await createModelRuntime({
+        authPath: join(dir, "auth.json"),
+        modelsPath: null,
+        refreshOnCreate: false,
+      });
+      const model = runtime.getModel("anthropic", "claude-sonnet-4-5");
+      if (!model) throw new Error("Missing fixture model");
+      vi.mocked(ModelRuntime.create).mockResolvedValue(runtime);
+      vi.spyOn(runtime, "getAvailable").mockResolvedValue([model]);
+      const manager = actual.SessionManager.create(dir, dir);
+      const sessionFile = manager.getSessionFile();
+      if (!sessionFile) throw new Error("Missing fixture session file");
+      // Persist a minimal session before handing it to the worker's open/resume path.
+      writeFileSync(sessionFile, `${JSON.stringify(manager.getHeader())}\n`);
+      codingAgentMocks.openSession.mockImplementation(actual.SessionManager.open);
+      let activeTools: string[] = [];
+      codingAgentMocks.createAgentSession.mockImplementation(async (options) => {
+        expect(options.modelRuntime).toBe(runtime);
+        expect(options).not.toHaveProperty("authStorage");
+        expect(options).not.toHaveProperty("modelRegistry");
+        expect(options.resourceLoader.getSystemPromptSource()).toBeUndefined();
+        expect(options.resourceLoader.getAppendSystemPromptSources()).toEqual([]);
+        const result = await actual.createAgentSession({
+          ...options,
+          model,
+          agentDir: dir,
+          settingsManager: actual.SettingsManager.inMemory(),
+        });
+        activeTools = result.session.getActiveToolNames();
+        vi.spyOn(result.session, "prompt").mockImplementation(async () => {
+          const message = {
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: "isolated SDK success" }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop" as const,
+            timestamp: Date.now(),
+          };
+          options.sessionManager.appendMessage(message);
+          result.session.messages.push(message);
+        });
+        return result;
+      });
+      const input = { worktreePath: dir, sessionFile, task: "isolated check" };
+      await expect(preflightWorkerRunRuntime(input)).resolves.toBeUndefined();
+      const result = await runWorkerPromptRuntime(input);
+      expect(result.errorMessage).toBeNull();
+      expect(result).toMatchObject({ status: "success", sessionId: manager.getSessionId() });
+      expect(activeTools.sort()).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"].sort());
+      expect(actual.SessionManager.open(sessionFile).getSessionId()).toBe(manager.getSessionId());
+      expect(readFileSync(sessionFile, "utf8")).toContain("isolated SDK success");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns aborted when cancellation interrupts asynchronous model initialization", async () => {
+    const controller = new AbortController();
+    vi.mocked(ModelRuntime.create).mockImplementation(async ({ signal } = {}) => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      throw new Error("initialization aborted");
+    });
+    await expect(
+      runWorkerPromptRuntime({
+        worktreePath: "/unused",
+        sessionFile: "/unused",
+        task: "unused",
+        signal: controller.signal,
+      }),
+    ).resolves.toMatchObject({ status: "aborted", sessionId: null });
+    expect(codingAgentMocks.createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("does not start a prompt when cancellation arrives during session setup", async () => {
+    const controller = new AbortController();
+    const session = {
+      sessionId: "cancelled-setup",
+      messages: [],
+      bindExtensions: vi.fn(async () => {
+        controller.abort();
+      }),
+      prompt: vi.fn(),
+      abort: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+    codingAgentMocks.createAgentSession.mockResolvedValue({ session });
+    await expect(
+      runWorkerPromptRuntime({
+        worktreePath: "/unused",
+        sessionFile: "/unused",
+        task: "unused",
+        signal: controller.signal,
+      }),
+    ).resolves.toMatchObject({ status: "aborted", sessionId: "cancelled-setup" });
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("does not initialize a session or auth for an already-cancelled run", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runWorkerPromptRuntime({
+        worktreePath: "/unused",
+        sessionFile: "/unused",
+        task: "unused",
+        signal: controller.signal,
+      }),
+    ).resolves.toMatchObject({ status: "aborted", sessionId: null });
+    expect(ModelRuntime.create).not.toHaveBeenCalled();
+    expect(codingAgentMocks.openSession).not.toHaveBeenCalled();
+    expect(codingAgentMocks.createAgentSession).not.toHaveBeenCalled();
   });
 
   it("maps conductor run statuses to runtime statuses", () => {
@@ -450,13 +590,19 @@ describe("worker run runtime helpers", () => {
 
     expect(codingAgentMocks.createAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: expect.arrayContaining([
+        tools: [
           "read",
+          "bash",
+          "edit",
+          "write",
+          "grep",
+          "find",
+          "ls",
           "conductor_child_progress",
           "conductor_child_create_gate",
           "conductor_child_create_followup_task",
           "conductor_child_complete",
-        ]),
+        ],
         customTools: expect.arrayContaining([
           expect.objectContaining({ name: "conductor_child_progress" }),
           expect.objectContaining({ name: "conductor_child_create_gate" }),
